@@ -3,127 +3,191 @@
 # Licensed under the Raphielscape Public License, Version 1.d (the "License");
 # you may not use this file except in compliance with the License.
 #
-"""Userbot module containing commands for interacting with dogbin(https://del.dog)."""
+"""Userbot module containing commands for interacting with dogbin(https://del.dog)"""
+
 import os
 
 import aiohttp
-from aiofile import async_open
+from aiohttp.client_exceptions import ClientConnectorError
+from requests import get, exceptions
 
-from userbot import CMD_HELP, TEMP_DOWNLOAD_DIRECTORY
+from userbot import BOTLOG_CHATID, CMD_HELP, TEMP_DOWNLOAD_DIRECTORY
 from userbot.events import register
 
-DOGBIN_URL = "https://del.dog/"
-NEKOBIN_URL = "https://nekobin.com/"
-KATBIN_URL = "https://katb.in/"
+
+class PasteBin:
+
+    DOGBIN_URL = "https://del.dog/"
+    HASTEBIN_URL = "https://hastebin.com/"
+    NEKOBIN_URL = "https://nekobin.com/"
+    _dkey = _hkey = _nkey = retry = None
+    service_match = {
+        "-d": "dogbin",
+        "-n": "nekobin",
+        "-h": "hastebin"
+    }
+
+    def __init__(self, data: str = None):
+        self.http = aiohttp.ClientSession()
+        self.data = data
+        self.retries = 3
+
+    def __bool__(self):
+        return bool(self._dkey or self._nkey or self._hkey)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
+
+    async def close(self):
+        await self.http.close()
+
+    async def __call__(self, service="dogbin"):
+        if service == "dogbin":
+            await self._post_dogbin()
+        elif service == "nekobin":
+            await self._post_nekobin()
+        elif service == "hastebin":
+            await self._post_hastebin()
+        else:
+            raise KeyError(f"Unknown service input: {service}")
+
+    async def _post_dogbin(self):
+        if self._dkey:
+            return
+        try:
+            async with self.http.post(
+                self.DOGBIN_URL + "documents", data=self.data.encode("utf-8")
+            ) as req:
+                if req.status == 200:
+                    res = await req.json()
+                    self._dkey = res["key"]
+                else:
+                    self.retry = "nekobin"
+        except ClientConnectorError:
+            self.retry = "nekobin"
+
+    async def _post_nekobin(self):
+        if self._nkey:
+            return
+        try:
+            async with self.http.post(
+                self.NEKOBIN_URL + "api/documents", json={"content": self.data}
+            ) as req:
+                if req.status == 201:
+                    res = await req.json()
+                    self._nkey = res["result"]["key"]
+                else:
+                    self.retry = "hastebin"
+        except ClientConnectorError:
+            self.retry = "hastebin"
+
+    async def _post_hastebin(self):
+        if self._hkey:
+            return
+        try:
+            async with self.http.post(
+                self.HASTEBIN_URL + "documents", data=self.data.encode("utf-8")
+            ) as req:
+                if req.status == 200:
+                    res = await req.json()
+                    self._hkey = res["key"]
+                else:
+                    self.retry = "dogbin"
+        except ClientConnectorError:
+            self.retry = "dogbin"
+
+    async def post(self, serv: str = "dogbin"):
+        """Post the initialized data to the pastebin service."""
+        if self.retries == 0:
+            return
+
+        await self.__call__(serv)
+
+        if self.retry:
+            self.retries -= 1
+            await self.post(self.retry)
+            self.retry = None
+
+    @property
+    def link(self) -> str:
+        """Return the view link"""
+        if self._dkey:
+            return self.DOGBIN_URL + self._dkey
+        if self._nkey:
+            return self.NEKOBIN_URL + self._nkey
+        if self._hkey:
+            return self.HASTEBIN_URL + self._hkey
+        return False
+
+    @property
+    def raw_link(self) -> str:
+        """Return the view raw link"""
+        if self._dkey:
+            return self.DOGBIN_URL + "raw/" + self._dkey
+        if self._nkey:
+            return self.NEKOBIN_URL + "raw/" + self._nkey
+        if self._hkey:
+            return self.HASTEBIN_URL + "raw/" + self._hkey
+        return False
 
 
-@register(outgoing=True, pattern=r"^\.paste(?: (k|d)|$)?(?: ([\s\S]+)|$)")
+@register(outgoing=True, pattern=r"^\.paste(?: (-d|-n|-h)|$)?(?: ([\s\S]+)|$)")
 async def paste(pstl):
-    """For .paste command, pastes the text directly to nekobin/dogbin"""
-    url_type = pstl.pattern_match.group(1)
-    url_type = url_type.strip() if url_type else "n"
+    """ For .paste command, pastes the text directly to a pastebin."""
+    service = pstl.pattern_match.group(1)
     match = pstl.pattern_match.group(2)
-    match = match.strip() if match else ""
-    replied = await pstl.get_reply_message()
-    f_ext = ".txt"
+    reply_id = pstl.reply_to_msg_id
 
-    use_dogbin = False
-    use_katbin = False
-    use_nekobin = False
-    if "d" in url_type:
-        use_dogbin = True
-    elif "k" in url_type:
-        use_katbin = True
-    elif "n" in url_type:
-        use_nekobin = True
-
-    if not match and not pstl.is_reply:
-        return await pstl.edit("`What should i paste...?`")
+    if not (match or reply_id):
+        return await pstl.edit("`Elon Musk said I cannot paste void.`")
 
     if match:
-        message = match
-    elif replied:
-        if replied.media:
+        message = match.strip()
+    elif reply_id:
+        message = await pstl.get_reply_message()
+        if message.media:
             downloaded_file_name = await pstl.client.download_media(
-                replied,
-                TEMP_DOWNLOAD_DIRECTORY,
+                message, TEMP_DOWNLOAD_DIRECTORY,
             )
-            f_ext = os.path.splitext(downloaded_file_name)[-1]
-            async with async_open(downloaded_file_name, "r") as fd:
-                try:
-                    message = await fd.read()
-                except UnicodeDecodeError:
-                    os.remove(downloaded_file_name)
-                    return await pstl.edit("`Can't paste this file.`")
+            m_list = None
+            with open(downloaded_file_name, "rb") as fd:
+                m_list = fd.readlines()
+            message = ""
+            for m in m_list:
+                message += m.decode("UTF-8")
             os.remove(downloaded_file_name)
         else:
-            message = replied.message
+            message = message.message
 
-    async with aiohttp.ClientSession() as ses:
-        if use_nekobin:
-            await pstl.edit("`Pasting to Nekobin...`")
-            async with ses.post(
-                NEKOBIN_URL + "api/documents", json={"content": message}
-            ) as resp:
-                if resp.status == 201:
-                    response = await resp.json()
-                    key = response["result"]["key"]
-                    nekobin_final_url = NEKOBIN_URL + key + f_ext
-                    reply_text = (
-                        "`Pasted successfully!`\n\n"
-                        f"[Nekobin URL]({nekobin_final_url})\n"
-                        f"[View RAW]({NEKOBIN_URL}raw/{key})"
-                    )
-                else:
-                    reply_text = "`Failed to reach Nekobin.`"
-        elif use_dogbin:
-            await pstl.edit("`Pasting to Dogbin...`")
-            async with ses.post(
-                DOGBIN_URL + "documents", data=message.encode("utf-8")
-            ) as resp:
-                if resp.status == 200:
-                    response = await resp.json()
-                    key = response["key"]
-                    dogbin_final_url = DOGBIN_URL + key + f_ext
+    await pstl.edit("`Pasting text . . .`")
+    async with PasteBin(message) as client:
+        if service:
+            service = service.strip()
+            if service not in ["-d", "-n", "-h"]:
+                return await pstl.edit("Invalid flag")
+            await client(client.service_match[service])
+        else:
+            await client.post()
 
-                    if response["isUrl"]:
-                        reply_text = (
-                            "`Pasted successfully!`\n\n"
-                            f"[Shortened URL]({dogbin_final_url})\n\n"
-                            "`Original(non-shortened) URLs`\n"
-                            f"[Dogbin URL]({DOGBIN_URL}v/{key})\n"
-                            f"[View RAW]({DOGBIN_URL}raw/{key})"
-                        )
-                    else:
-                        reply_text = (
-                            "`Pasted successfully!`\n\n"
-                            f"[Dogbin URL]({dogbin_final_url})\n"
-                            f"[View RAW]({DOGBIN_URL}raw/{key})"
-                        )
-                else:
-                    reply_text = "`Failed to reach Dogbin.`"
-        elif use_katbin:
-            await pstl.edit("`Pasting to Katbin...`")
-            async with ses.post(
-                "https://api.katb.in/api/paste", json={"content": message}
-            ) as resp:
-                if resp.status == 201:
-                    response = await resp.json()
-                    katbin_final_url = KATBIN_URL + response.get("paste_id")
-                    reply_text = (
-                        "`Pasted successfully!`\n\n"
-                        f"[Katb.in URL]({katbin_final_url})\n"
-                        f"[View RAW]({katbin_final_url}/raw)"
-                    )
-                else:
-                    reply_text = "`Failed to reach Katb.in.`"
+        if client:
+            reply_text = (
+                "`Pasted successfully!`\n\n"
+                f"[URL]({client.link})\n"
+                f"[View RAW]({client.raw_link})"
+            )
+        else:
+            reply_text = "`Failed to reach Pastebin Service`"
 
     await pstl.edit(reply_text, link_preview=False)
 
 
 @register(outgoing=True, pattern=r"^\.getpaste(?: |$)(.*)")
 async def get_dogbin_content(dog_url):
-    """For .getpaste command, fetches the content of a dogbin URL."""
+    """ For .getpaste command, fetches the content of a dogbin URL. """
+    DOGBIN_URL = PasteBin.DOGBIN_URL
     textx = await dog_url.get_reply_message()
     message = dog_url.pattern_match.group(1)
     await dog_url.edit("`Getting dogbin content...`")
@@ -135,40 +199,49 @@ async def get_dogbin_content(dog_url):
     format_view = f"{DOGBIN_URL}v/"
 
     if message.startswith(format_view):
-        message = message[len(format_view) :]
+        message = message[len(format_view):]
     elif message.startswith(format_normal):
-        message = message[len(format_normal) :]
+        message = message[len(format_normal):]
     elif message.startswith("del.dog/"):
-        message = message[len("del.dog/") :]
+        message = message[len("del.dog/"):]
     else:
         return await dog_url.edit("`Is that even a dogbin url?`")
 
-    async with aiohttp.ClientSession(raise_for_status=True) as ses:
-        try:
-            async with ses.get(f"{DOGBIN_URL}raw/{message}") as resp:
-                paste_content = await resp.text()
-        except aiohttp.ClientResponseError as err:
-            return await dog_url.edit(
-                f"Request returned an unsuccessful status code.\n\n{str(err)}"
-            )
-        except aiohttp.ServerTimeoutError as err:
-            return await dog_url.edit(f"Requests timed out.\n\n{str(err)}")
-        except aiohttp.TooManyRedirects as err:
-            return await dog_url.edit(
-                f"Request exceeded the configured number of maximum redirections.\n\n{str(err)}"
-            )
-        reply_text = (
-            f"Fetched Dogbin content successfully!\n\nContent :\n`{paste_content}`"
+    resp = get(f"{DOGBIN_URL}raw/{message}")
+
+    try:
+        resp.raise_for_status()
+    except exceptions.HTTPError as HTTPErr:
+        await dog_url.edit(
+            "Request returned an unsuccessful status code.\n\n" + str(HTTPErr)
         )
+        return
+    except exceptions.Timeout as TimeoutErr:
+        await dog_url.edit("Request timed out." + str(TimeoutErr))
+        return
+    except exceptions.TooManyRedirects as RedirectsErr:
+        await dog_url.edit(
+            "Request exceeded the configured number of maximum redirections."
+            + str(RedirectsErr)
+        )
+        return
+
+    reply_text = (
+        "`Fetched dogbin URL content successfully!`"
+        "\n\n`Content:` " + resp.text)
 
     await dog_url.edit(reply_text)
+    if BOTLOG_CHATID:
+        await dog_url.client.send_message(
+            BOTLOG_CHATID, "Get dogbin content query was executed successfully",
+        )
 
 
-CMD_HELP.update(
-    {
-        "paste": ">`.paste` or `.paste <d/k>` <text/reply>"
-        "\nUsage: Paste your text to Nekobin or Dogbin or Katbin"
-        "\n\n>`.getpaste`"
-        "\nUsage: Gets the content of a paste or shortened url from dogbin (https://del.dog/)"
-    }
-)
+CMD_HELP.update({
+    "pastebin":
+    "`.paste` <text/reply>"
+    "\nUsage: Create a paste to a pastebin service flags['-d', '-n', '-h']"
+    "\n\n`.getpaste` <reply/link>"
+    "\nUsage: Gets the content of a paste or shortened url from dogbin (https://del.dog/)"
+    "\n\n -d -> Dogbin\n-n -> Nekobin\n-h -> Hastebin"
+})
