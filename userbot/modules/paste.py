@@ -9,9 +9,8 @@ import os
 
 import aiohttp
 from aiohttp.client_exceptions import ClientConnectorError
-from requests import get, exceptions
 
-from userbot import BOTLOG_CHATID, CMD_HELP, TEMP_DOWNLOAD_DIRECTORY
+from userbot import CMD_HELP, TEMP_DOWNLOAD_DIRECTORY
 from userbot.events import register
 
 
@@ -21,11 +20,7 @@ class PasteBin:
     HASTEBIN_URL = "https://hastebin.com/"
     NEKOBIN_URL = "https://nekobin.com/"
     _dkey = _hkey = _nkey = retry = None
-    service_match = {
-        "-d": "dogbin",
-        "-n": "nekobin",
-        "-h": "hastebin"
-    }
+    service_match = {"-d": "dogbin", "-n": "nekobin", "-h": "hastebin"}
 
     def __init__(self, data: str = None):
         self.http = aiohttp.ClientSession()
@@ -136,7 +131,7 @@ class PasteBin:
 
 @register(outgoing=True, pattern=r"^\.paste(?: (-d|-n|-h)|$)?(?: ([\s\S]+)|$)")
 async def paste(pstl):
-    """ For .paste command, pastes the text directly to a pastebin."""
+    """For .paste command, pastes the text directly to a pastebin."""
     service = pstl.pattern_match.group(1)
     match = pstl.pattern_match.group(2)
     reply_id = pstl.reply_to_msg_id
@@ -150,7 +145,8 @@ async def paste(pstl):
         message = await pstl.get_reply_message()
         if message.media:
             downloaded_file_name = await pstl.client.download_media(
-                message, TEMP_DOWNLOAD_DIRECTORY,
+                message,
+                TEMP_DOWNLOAD_DIRECTORY,
             )
             m_list = None
             with open(downloaded_file_name, "rb") as fd:
@@ -184,64 +180,10 @@ async def paste(pstl):
     await pstl.edit(reply_text, link_preview=False)
 
 
-@register(outgoing=True, pattern=r"^\.getpaste(?: |$)(.*)")
-async def get_dogbin_content(dog_url):
-    """ For .getpaste command, fetches the content of a dogbin URL. """
-    DOGBIN_URL = PasteBin.DOGBIN_URL
-    textx = await dog_url.get_reply_message()
-    message = dog_url.pattern_match.group(1)
-    await dog_url.edit("`Getting dogbin content...`")
-
-    if textx:
-        message = str(textx.message)
-
-    format_normal = f"{DOGBIN_URL}"
-    format_view = f"{DOGBIN_URL}v/"
-
-    if message.startswith(format_view):
-        message = message[len(format_view):]
-    elif message.startswith(format_normal):
-        message = message[len(format_normal):]
-    elif message.startswith("del.dog/"):
-        message = message[len("del.dog/"):]
-    else:
-        return await dog_url.edit("`Is that even a dogbin url?`")
-
-    resp = get(f"{DOGBIN_URL}raw/{message}")
-
-    try:
-        resp.raise_for_status()
-    except exceptions.HTTPError as HTTPErr:
-        await dog_url.edit(
-            "Request returned an unsuccessful status code.\n\n" + str(HTTPErr)
-        )
-        return
-    except exceptions.Timeout as TimeoutErr:
-        await dog_url.edit("Request timed out." + str(TimeoutErr))
-        return
-    except exceptions.TooManyRedirects as RedirectsErr:
-        await dog_url.edit(
-            "Request exceeded the configured number of maximum redirections."
-            + str(RedirectsErr)
-        )
-        return
-
-    reply_text = (
-        "`Fetched dogbin URL content successfully!`"
-        "\n\n`Content:` " + resp.text)
-
-    await dog_url.edit(reply_text)
-    if BOTLOG_CHATID:
-        await dog_url.client.send_message(
-            BOTLOG_CHATID, "Get dogbin content query was executed successfully",
-        )
-
-
-CMD_HELP.update({
-    "pastebin":
-    "`.paste` <text/reply>"
-    "\nUsage: Create a paste to a pastebin service flags['-d', '-n', '-h']"
-    "\n\n`.getpaste` <reply/link>"
-    "\nUsage: Gets the content of a paste or shortened url from dogbin (https://del.dog/)"
-    "\n\n -d -> Dogbin\n-n -> Nekobin\n-h -> Hastebin"
-})
+CMD_HELP.update(
+    {
+        "paste": "`.paste` <text/reply>"
+        "\nUsage: Create a paste to a pastebin service flags['-d', '-n', '-h']"
+        "\n\n -d -> Dogbin\n-n -> Nekobin\n-h -> Hastebin"
+    }
+)
